@@ -1,0 +1,31 @@
+[project]
+name = "sayo-backend-system"
+version = "0.1.0"
+description = "Sayo backend for one-node and distributed systems"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[toll.ruff.lint]
+# E, W — Flake8 (ошибки и предупреждения)
+# F — Pyflakes
+# I — Isort (сортировка импортов)
+# B — Flake8-bugbear (поиск вероятных багов)
+# C4 — Flake8-comprehensions
+select = ["E", "W", "F", "I", "B", "C4"]
+ignore = []
+
+[toll.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "grpcio-tools==1.80.0",
+    "pre-commit>=4.6.0",
+    "ruff>=0.15.11",
+]
