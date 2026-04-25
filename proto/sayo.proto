@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package sayo;
+
+service SayoService {
+  rpc HealthCheck (HealthCheckRequest) returns (HealthCheckResponse);
+  rpc StreamingRecognize(stream StreamingRecognizeRequest) returns (stream StreamingRecognizeResponse);
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool ready = 1;
+  string message = 2;
+  repeated ModelDescriptor models = 3;
+}
+
+message ModelDescriptor {
+  string model_id = 1;
+  string description = 2;
+  string language_code = 3;
+  int32 sample_rate_hertz = 4;
+  AudioQuantization audio_quantization = 5;
+  int32 chunk_duration_ms = 6;
+  bool supports_interim_results = 7;
+  float latency_ms = 8;
+}
+
+message StreamingRecognizeRequest {
+  // The first message in stream MUST be config, all next messages MUST be audio_chunk.
+  oneof payload {
+    StreamingConfig config = 1;
+    bytes audio_chunk = 2; // Raw mono PCM chunk according to StreamingConfig.(OBS default: Float32, 48kHz)
+  }
+}
+
+message StreamingConfig {
+  // Model selected by user from HealthCheckResponse.models.
+  string model_id = 1;
+
+  // Recognition behavior.
+  string language_code = 2;
+  bool interim_results = 3;
+
+  // Incoming audio format from the client.
+  int32 sample_rate_hertz = 4;
+  AudioQuantization audio_quantization = 5;
+  int32 chunk_duration_ms = 6;
+
+  // VAD config selected by user in UI.
+  float vad_threshold = 7;                // e.g. 0.5
+  int32 vad_min_silence_duration_ms = 8;  // e.g. 500
+}
+
+message StreamingRecognizeResponse {
+  // Best transcript for this update.
+  string transcript = 1;
+
+  // True: final segment. False: interim update.
+  bool is_final = 2;
+
+  // 0.0..1.0 confidence score if available.
+  float confidence = 3;
+
+  // Optional metadata (latency, model_id, timings, etc.)
+  map<string, string> metadata = 4;
+}
+
+enum AudioQuantization {
+  AUDIO_QUANTIZATION_UNSPECIFIED = 0;
+  AUDIO_QUANTIZATION_PCM_S16LE = 1;
+  AUDIO_QUANTIZATION_PCM_F32LE = 2;
+}
