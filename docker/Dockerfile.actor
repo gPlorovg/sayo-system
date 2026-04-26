@@ -1,0 +1,39 @@
+# actor_image = per-model image + transcript_actor + Silero VAD + baked weights.
+# Built only by the Model Registry (sayo_host/registry/wrapper.py).
+ARG MODEL_IMAGE
+FROM ${MODEL_IMAGE}
+
+ARG MODEL_NAME
+ENV MODEL_NAME=${MODEL_NAME}
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+# Image-side python tree: model_repository iface, transcript_actor, vad.
+COPY sayo_image /app/sayo_image
+
+# Pre-baked Silero VAD weights — no torch.hub at runtime.
+COPY vad-weights/silero_vad.onnx /opt/silero/silero_vad.onnx
+
+# Generate proto stubs locally to keep gencode/runtime aligned.
+COPY proto /app/proto
+RUN python -m pip install --no-cache-dir "grpcio-tools==1.80.0" \
+ && python -m grpc_tools.protoc \
+        -I /app \
+        --python_out=/app \
+        --grpc_python_out=/app \
+        /app/proto/sayo.proto
+
+# Runtime deps for actor itself: ray + onnxruntime + structlog.
+# (numpy, yaml, etc. are already present in the per-model image.)
+RUN python -m pip install --no-cache-dir \
+        "ray[default]>=2.30.0" \
+        "onnxruntime>=1.17" \
+        "structlog>=24.1.0"
+
+# Baked model weights produced by the Registry wrapping pipeline.
+# `weights-staging/<MODEL_NAME>` is created by wrapper.py for every build,
+# even if it ends up empty.
+COPY weights-staging/ /app/models/
+
+ENTRYPOINT ["python", "-m", "sayo_image.transcript_actor.bootstrap"]

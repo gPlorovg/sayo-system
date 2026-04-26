@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""sayoctl — tiny admin CLI for Sayo Model Registry.
+
+Examples:
+  sayoctl register-model registry.example.com/sayo-model-nemo:1.0.0
+  sayoctl list
+  sayoctl unregister nemo_ru --remove-image
+  sayoctl state
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_URL = os.environ.get("SAYO_REGISTRY_URL", "http://localhost:8000")
+
+
+def _request(method: str, url: str, body: dict | None = None) -> dict | list:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            return json.loads(resp.read().decode() or "null")
+    except urllib.error.HTTPError as exc:
+        msg = exc.read().decode(errors="replace")
+        sys.exit(f"HTTP {exc.code}: {msg}")
+    except urllib.error.URLError as exc:
+        sys.exit(f"connection failed: {exc.reason}")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Sayo Model Registry CLI")
+    p.add_argument(
+        "--url",
+        default=DEFAULT_URL,
+        help="Registry base URL (env: SAYO_REGISTRY_URL)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    reg = sub.add_parser("register-model", help="Wrap and register a per-model image")
+    reg.add_argument("image_ref")
+    reg.add_argument("--force", action="store_true")
+
+    sub.add_parser("list", help="List registered models")
+
+    unreg = sub.add_parser("unregister", help="Remove a model from the catalog")
+    unreg.add_argument("model_id")
+    unreg.add_argument("--remove-image", action="store_true")
+
+    sub.add_parser("state", help="Dump /v1/admin/state for debugging")
+
+    args = p.parse_args()
+    base = args.url.rstrip("/")
+
+    if args.cmd == "register-model":
+        result = _request(
+            "POST",
+            f"{base}/v1/admin/models",
+            {"image_ref": args.image_ref, "force": args.force},
+        )
+    elif args.cmd == "list":
+        result = _request("GET", f"{base}/v1/models")
+    elif args.cmd == "unregister":
+        suffix = "?remove_image=true" if args.remove_image else ""
+        result = _request("DELETE", f"{base}/v1/admin/models/{args.model_id}{suffix}")
+    elif args.cmd == "state":
+        result = _request("GET", f"{base}/v1/admin/state")
+    else:  # pragma: no cover - argparse already enforces this
+        p.error("unknown command")
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

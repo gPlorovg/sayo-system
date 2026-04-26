@@ -1,0 +1,5 @@
+ARG HOST_BASE=sayo-host-base:latest
+FROM ${HOST_BASE}
+
+EXPOSE 50051
+ENTRYPOINT ["python", "-m", "sayo_host.gateway.server"]

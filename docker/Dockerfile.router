@@ -1,0 +1,4 @@
+ARG HOST_BASE=sayo-host-base:latest
+FROM ${HOST_BASE}
+
+ENTRYPOINT ["python", "-m", "sayo_host.router.router"]

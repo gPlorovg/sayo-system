@@ -1,0 +1,57 @@
+# Stage-2 sketch for `ray up` provisioning.
+# Customize provider/credentials before running.
+
+cluster_name: sayo
+
+provider:
+  type: local
+
+auth:
+  ssh_user: ubuntu
+
+min_workers: 0
+max_workers: 4
+upscaling_speed: 1.0
+
+docker:
+  image: rayproject/ray:2.30.0-py312-gpu
+  container_name: sayo_ray
+  pull_before_run: true
+  run_options:
+    - --shm-size=2g
+    - --gpus=all
+
+available_node_types:
+  ray.head.default:
+    resources: { CPU: 8 }
+    node_config: {}
+  ray.worker.gpu:
+    resources: { CPU: 8, GPU: 1 }
+    min_workers: 1
+    max_workers: 4
+    node_config: {}
+
+head_node_type: ray.head.default
+
+setup_commands:
+  - pip install --no-cache-dir ray[default]==2.30.0
+
+# Hand-off to docker-compose for sayo host services (master only):
+head_setup_commands:
+  - cd ~/sayo-backend-system && \
+    docker compose -f deploy/single-node/docker-compose.yml up -d --build
+
+# Worker nodes only need ray + worker-manager container.
+worker_setup_commands:
+  - docker run -d --restart=always \
+      --name sayo-worker-manager \
+      --network host \
+      -e NODE_ID="$(hostname)" \
+      -e RAY_ADDRESS="$RAY_HEAD_IP:10001" \
+      -e RAY_NAMESPACE=sayo \
+      -e RAY_HEAD_HOST="$RAY_HEAD_IP:6379" \
+      -e REGISTRY_URL="http://$RAY_HEAD_IP:8000" \
+      -e SAYO_NETWORK=host \
+      -e SAYO_DISTRIBUTED=1 \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      sayo-worker-manager:latest
