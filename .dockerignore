@@ -3,7 +3,5 @@
 **/*.pyc
 **/.pytest_cache/
 **/.ruff_cache/
-guidline/
 deploy/distributed/
 sandbox/
-weights-staging/
