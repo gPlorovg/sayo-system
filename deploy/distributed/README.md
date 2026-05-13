@@ -41,7 +41,7 @@ This is a sketch for the multi-node setup. It reuses every component from
      --name sayo-worker-manager-N \
      --network host \
      -e NODE_ID=node-N \
-     -e RAY_ADDRESS=<master>:10001 \
+     -e RAY_ADDRESS=<master>:6379 \
      -e RAY_NAMESPACE=sayo \
      -e RAY_HEAD_HOST=<master>:6379 \
      -e REGISTRY_URL=http://<master>:8000 \
@@ -58,7 +58,8 @@ This is a sketch for the multi-node setup. It reuses every component from
    ```
 
    The wrapping pipeline pushes the new `actor_image` to
-   `registry.example.com/sayo-actor/<id>:...`. Worker nodes will pull it
+   `registry.example.com/sayo-actor-<slug>:<tag>` (e.g. `sayo-actor-nemo:1.0.0` when
+   the per-model image is `sayo-model-nemo:1.0.0`). Worker nodes will pull it
    on first `spawn`.
 
 ## Why this is enough

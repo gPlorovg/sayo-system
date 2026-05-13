@@ -14,7 +14,7 @@ max_workers: 4
 upscaling_speed: 1.0
 
 docker:
-  image: rayproject/ray:2.30.0-py312-gpu
+  image: rayproject/ray:2.39.0-py312-gpu
   container_name: sayo_ray
   pull_before_run: true
   run_options:
@@ -34,7 +34,7 @@ available_node_types:
 head_node_type: ray.head.default
 
 setup_commands:
-  - pip install --no-cache-dir ray[default]==2.30.0
+  - pip install --no-cache-dir ray[default]==2.39.0
 
 # Hand-off to docker-compose for sayo host services (master only):
 head_setup_commands:
@@ -47,7 +47,7 @@ worker_setup_commands:
       --name sayo-worker-manager \
       --network host \
       -e NODE_ID="$(hostname)" \
-      -e RAY_ADDRESS="$RAY_HEAD_IP:10001" \
+      -e RAY_ADDRESS="$RAY_HEAD_IP:6379" \
       -e RAY_NAMESPACE=sayo \
       -e RAY_HEAD_HOST="$RAY_HEAD_IP:6379" \
       -e REGISTRY_URL="http://$RAY_HEAD_IP:8000" \
