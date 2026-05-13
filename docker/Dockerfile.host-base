@@ -1,0 +1,42 @@
+# Common base for all four host services.
+# Keep Python patch version aligned with rayproject/ray:2.39.0-py312-gpu (3.12.7)
+# to avoid Ray runtime version mismatch when starting ray workers in containers.
+FROM python:3.12.7-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml /app/pyproject.toml
+
+RUN python -m pip install --upgrade pip && \
+    python -m pip install \
+        "grpcio==1.80.0" \
+        "grpcio-tools==1.80.0" \
+        "protobuf>=6.33.0,<7" \
+        "structlog>=24.1.0" \
+        "pyyaml>=6.0" \
+        "httpx>=0.27.0" \
+        "fastapi>=0.115.0" \
+        "uvicorn[standard]>=0.30.0" \
+        "pydantic>=2.7.0" \
+        "ray[default]==2.39.0" \
+        "ray[client]==2.39.0"
+
+# Common host-side code + freshly generated proto stubs.
+COPY proto /app/proto
+COPY sayo_host /app/sayo_host
+
+RUN python -m grpc_tools.protoc \
+        -I /app \
+        --python_out=/app \
+        --grpc_python_out=/app \
+        /app/proto/sayo.proto

@@ -1,0 +1,37 @@
+# Pre-baked wheels + gRPC stubs for TranscriptActor images (Linux / same arch as builds).
+# Python patch must match per-model images (see Dockerfile.host-base / model images).
+#
+# Build once, reuse from Dockerfile.actor via:
+#   FROM sayo-actor-runtime:latest AS actor_runtime
+#
+# docker compose --profile build-only build actor-runtime
+# (or docker build -f docker/Dockerfile.actor-runtime -t sayo-actor-runtime:latest .)
+FROM python:3.12.7-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG GRPCIO_TOOLS_VERSION=1.80.0
+ARG RAY_VERSION=2.39.0
+
+# Wheelhouse: reused by actor builds (offline pip from this folder).
+RUN mkdir -p /export/wheels /export/stubs/proto
+
+COPY proto /export/stubs/proto
+
+RUN python -m pip install -U pip setuptools wheel && \
+    python -m pip wheel -w /export/wheels \
+        "grpcio-tools==${GRPCIO_TOOLS_VERSION}" \
+        "ray[default]==${RAY_VERSION}" \
+        "onnxruntime>=1.17" \
+        "structlog>=24.1.0"
+
+RUN python -m pip install --no-cache-dir "grpcio-tools==${GRPCIO_TOOLS_VERSION}" && \
+    python -m grpc_tools.protoc \
+        -I /export/stubs \
+        --python_out=/export/stubs \
+        --grpc_python_out=/export/stubs \
+        /export/stubs/proto/sayo.proto

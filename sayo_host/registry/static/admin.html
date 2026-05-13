@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sayo model registry — admin</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --err: #f85149;
+      --log-bg: #0d1117;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1rem 1.25rem 2rem;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.5rem; }
+    p.sub { color: var(--muted); margin: 0 0 1.25rem; font-size: 0.9rem; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+    }
+    section h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 0 0 0.75rem;
+      font-weight: 600;
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.2rem; }
+    input[type="text"] {
+      width: 100%;
+      max-width: 36rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--log-bg);
+      color: var(--text);
+      font-family: ui-monospace, monospace;
+      font-size: 0.9rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 0.6rem 0; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; cursor: pointer; }
+    button {
+      background: var(--accent);
+      color: #0d1117;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: var(--border); color: var(--text); }
+    button.danger { background: var(--err); color: #fff; }
+    #log {
+      font-family: ui-monospace, "Cascadia Mono", monospace;
+      font-size: 0.78rem;
+      background: var(--log-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.65rem 0.75rem;
+      min-height: 12rem;
+      max-height: 42vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #log .phase { color: var(--accent); font-weight: 600; }
+    #log .docker { color: #a371f7; }
+    #log .err { color: var(--err); }
+    #log .ok { color: var(--ok); }
+    #snapshot { font-size: 0.8rem; color: var(--muted); }
+    #snapshot strong { color: var(--text); }
+    .grid { display: grid; gap: 0.5rem; font-size: 0.85rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>Model registry — admin</h1>
+  <p class="sub">
+    Стрим регистрации: NDJSON с фазами и выводом <code>docker build</code>.
+    Открой также <a href="/docs">Swagger /docs</a>.
+  </p>
+
+  <section>
+    <h2>Снимок</h2>
+    <div class="row">
+      <button type="button" class="secondary" id="btn-refresh">Обновить health / models / state</button>
+    </div>
+    <div id="snapshot">Нажми «Обновить».</div>
+  </section>
+
+  <section>
+    <h2>Регистрация (stream)</h2>
+    <label for="image_ref">image_ref</label>
+    <input type="text" id="image_ref" placeholder="sayo-model-nemo:latest" />
+    <div class="row">
+      <label><input type="checkbox" id="force" /> force</label>
+      <label><input type="checkbox" id="local_only" /> local_only (без pull)</label>
+    </div>
+    <div class="row">
+      <button type="button" id="btn-register">Зарегистрировать (stream)</button>
+    </div>
+    <h2 style="margin-top:1rem">Лог</h2>
+    <div id="log"></div>
+  </section>
+
+  <section>
+    <h2>Unregister</h2>
+    <label for="unreg_id">model_id</label>
+    <input type="text" id="unreg_id" placeholder="nemo_ru" />
+    <div class="row">
+      <label><input type="checkbox" id="remove_image" /> remove_image</label>
+      <button type="button" class="danger" id="btn-unreg">Удалить из каталога</button>
+    </div>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+
+    function appendLog(html) {
+      const d = document.createElement("div");
+      d.innerHTML = html;
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function clearLog() {
+      logEl.textContent = "";
+    }
+
+    async function refreshSnapshot() {
+      const snap = $("snapshot");
+      snap.textContent = "Загрузка…";
+      try {
+        const [h, m, s] = await Promise.all([
+          fetch("/v1/health").then((r) => r.json()),
+          fetch("/v1/models").then((r) => r.json()),
+          fetch("/v1/admin/state").then((r) => r.json()),
+        ]);
+        snap.innerHTML =
+          "<div class='grid'>" +
+          "<div><strong>health</strong> " +
+          JSON.stringify(h) +
+          "</div>" +
+          "<div><strong>models</strong> " +
+          (Array.isArray(m) ? m.length + " шт." : "?") +
+          "</div>" +
+          "<div><strong>model ids</strong> " +
+          (Array.isArray(m) ? m.map((x) => x.model_id || x.id || "?").join(", ") : "—") +
+          "</div>" +
+          "<div><strong>state</strong> " +
+          JSON.stringify(s) +
+          "</div></div>";
+      } catch (e) {
+        snap.textContent = "Ошибка: " + e;
+      }
+    }
+
+    $("btn-refresh").onclick = refreshSnapshot;
+
+    async function registerStream() {
+      const image_ref = $("image_ref").value.trim();
+      if (!image_ref) {
+        alert("Укажи image_ref");
+        return;
+      }
+      clearLog();
+      const btn = $("btn-register");
+      btn.disabled = true;
+      try {
+        const resp = await fetch("/v1/admin/models/register-stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            image_ref,
+            force: $("force").checked,
+            local_only: $("local_only").checked,
+          }),
+        });
+        if (!resp.ok) {
+          const t = await resp.text();
+          appendLog("<span class='err'>HTTP " + resp.status + ": " + t + "</span>");
+          return;
+        }
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let ev;
+            try {
+              ev = JSON.parse(line);
+            } catch {
+              appendLog("<span class='err'>bad json: " + line + "</span>");
+              continue;
+            }
+            if (ev.phase === "done") {
+              appendLog(
+                "<span class='ok'>done</span> " +
+                  JSON.stringify(ev.manifest, null, 2)
+              );
+            } else if (ev.phase === "error") {
+              appendLog(
+                "<span class='err'>error</span> " + (ev.error || JSON.stringify(ev))
+              );
+            } else if (ev.phase === "docker_build") {
+              appendLog(
+                "<span class='docker'>docker_build</span> " +
+                  escapeHtml(ev.message || "")
+              );
+            } else {
+              appendLog(
+                "<span class='phase'>" +
+                  escapeHtml(ev.phase || "?") +
+                  "</span> " +
+                  escapeHtml(ev.message || "")
+              );
+            }
+          }
+        }
+        const tail = buf.trim();
+        if (tail) {
+          try {
+            const ev = JSON.parse(tail);
+            if (ev.phase === "done") {
+              appendLog(
+                "<span class='ok'>done</span> " +
+                  JSON.stringify(ev.manifest, null, 2)
+              );
+            } else if (ev.phase === "error") {
+              appendLog("<span class='err'>error</span> " + escapeHtml(ev.error || ""));
+            }
+          } catch { /* ignore */ }
+        }
+      } catch (e) {
+        appendLog("<span class='err'>" + escapeHtml(String(e)) + "</span>");
+      } finally {
+        btn.disabled = false;
+        refreshSnapshot();
+      }
+    }
+
+    function escapeHtml(s) {
+      return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    $("btn-register").onclick = registerStream;
+
+    $("btn-unreg").onclick = async () => {
+      const id = $("unreg_id").value.trim();
+      if (!id) {
+        alert("model_id");
+        return;
+      }
+      const q = $("remove_image").checked ? "?remove_image=true" : "";
+      try {
+        const r = await fetch("/v1/admin/models/" + encodeURIComponent(id) + q, {
+          method: "DELETE",
+        });
+        const t = await r.text();
+        alert(r.ok ? "OK: " + t : r.status + " " + t);
+        refreshSnapshot();
+      } catch (e) {
+        alert(String(e));
+      }
+    };
+
+    refreshSnapshot();
+  </script>
+</body>
+</html>

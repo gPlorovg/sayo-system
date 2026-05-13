@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""sayoctl — tiny admin CLI for Sayo Model Registry.
+
+Examples:
+  sayoctl register-model registry.example.com/sayo-model-nemo:1.0.0
+  sayoctl register-model my-nemo:1.0.0 --local   # already in `docker images`, no pull
+  sayoctl list
+  sayoctl unregister nemo_ru --remove-image
+  sayoctl state
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_URL = os.environ.get("SAYO_REGISTRY_URL", "http://localhost:8000")
+
+
+def _request(method: str, url: str, body: dict | None = None) -> dict | list:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode() or "null")
+    except urllib.error.HTTPError as exc:
+        msg = exc.read().decode(errors="replace")
+        sys.exit(f"HTTP {exc.code}: {msg}")
+    except urllib.error.URLError as exc:
+        sys.exit(f"connection failed: {exc.reason}")
+
+
+def _log_register_stream_line(ev: dict) -> None:
+    """Same phases as /admin register-stream (NDJSON from registry)."""
+    phase = str(ev.get("phase") or "?")
+    if phase == "done":
+        manifest = ev.get("manifest")
+        print("[done]", file=sys.stderr)
+        if manifest is not None:
+            print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return
+    if phase == "error":
+        err = ev.get("error") or json.dumps(ev, ensure_ascii=False)
+        print(f"[error] {err}", file=sys.stderr)
+        return
+    if phase == "docker_build":
+        msg = str(ev.get("message") or "")
+        print(f"[docker_build] {msg}", file=sys.stderr)
+        return
+    msg = str(ev.get("message") or "")
+    print(f"[{phase}] {msg}", file=sys.stderr)
+
+
+def _register_model_stream(
+    base: str, image_ref: str, *, force: bool, local_only: bool
+) -> dict | None:
+    """POST register-stream; log each line to stderr; print manifest JSON to stdout."""
+    url = f"{base.rstrip('/')}/v1/admin/models/register-stream"
+    payload = json.dumps(
+        {
+            "image_ref": image_ref,
+            "force": force,
+            "local_only": local_only,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    manifest: dict | None = None
+    try:
+        with urllib.request.urlopen(req) as resp:
+            if resp.status != 200:
+                body = resp.read().decode(errors="replace")
+                print(f"[error] HTTP {resp.status}: {body}", file=sys.stderr)
+                sys.exit(1)
+            buf = b""
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    raw_line, buf = buf.split(b"\n", 1)
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        print(f"[parse_error] {line!r}", file=sys.stderr)
+                        continue
+                    _log_register_stream_line(ev)
+                    if ev.get("phase") == "done":
+                        manifest = ev.get("manifest")
+                    elif ev.get("phase") == "error":
+                        sys.exit(1)
+            tail = buf.strip()
+            if tail:
+                try:
+                    ev = json.loads(tail.decode("utf-8"))
+                    _log_register_stream_line(ev)
+                    if ev.get("phase") == "done":
+                        manifest = ev.get("manifest")
+                    elif ev.get("phase") == "error":
+                        sys.exit(1)
+                except json.JSONDecodeError:
+                    print(f"[parse_error] {tail!r}", file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        msg = exc.read().decode(errors="replace")
+        print(f"[error] HTTP {exc.code}: {msg}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as exc:
+        print(f"[error] connection failed: {exc.reason}", file=sys.stderr)
+        sys.exit(1)
+    if manifest is None:
+        print(
+            "[error] stream ended without done manifest",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return manifest
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Sayo Model Registry CLI")
+    p.add_argument(
+        "--url",
+        default=DEFAULT_URL,
+        help="Registry base URL (env: SAYO_REGISTRY_URL)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    reg = sub.add_parser("register-model", help="Wrap and register a per-model image")
+    reg.add_argument("image_ref")
+    reg.add_argument("--force", action="store_true")
+    reg.add_argument(
+        "--local",
+        action="store_true",
+        help="Require the image locally only (no docker pull)",
+    )
+    reg.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Use blocking POST /v1/admin/models (no live docker log)",
+    )
+
+    sub.add_parser("list", help="List registered models")
+
+    unreg = sub.add_parser("unregister", help="Remove a model from the catalog")
+    unreg.add_argument("model_id")
+    unreg.add_argument("--remove-image", action="store_true")
+
+    sub.add_parser("state", help="Dump /v1/admin/state for debugging")
+
+    args = p.parse_args()
+    base = args.url.rstrip("/")
+
+    if args.cmd == "register-model":
+        if args.no_stream:
+            result = _request(
+                "POST",
+                f"{base}/v1/admin/models",
+                {
+                    "image_ref": args.image_ref,
+                    "force": args.force,
+                    "local_only": args.local,
+                },
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _register_model_stream(
+                base,
+                args.image_ref,
+                force=args.force,
+                local_only=args.local,
+            )
+    elif args.cmd == "list":
+        result = _request("GET", f"{base}/v1/models")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    elif args.cmd == "unregister":
+        suffix = "?remove_image=true" if args.remove_image else ""
+        result = _request("DELETE", f"{base}/v1/admin/models/{args.model_id}{suffix}")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    elif args.cmd == "state":
+        result = _request("GET", f"{base}/v1/admin/state")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:  # pragma: no cover - argparse already enforces this
+        p.error("unknown command")
+
+
+if __name__ == "__main__":
+    main()

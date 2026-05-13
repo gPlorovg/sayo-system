@@ -1,0 +1,35 @@
+# actor_image = MODEL_IMAGE + Sayo layers. Heavy deps come from pre-built ACTOR_RUNTIME
+# (see Dockerfile.actor-runtime) so registration only runs fast local pip installs.
+#
+# Requires image ACTOR_RUNTIME (default sayo-actor-runtime:latest) on the same Docker
+# daemon. Build: docker compose --profile build-only build actor-runtime
+#
+# All ARGs used in any FROM must appear before the first FROM (Docker ARG/FROM rules).
+ARG MODEL_IMAGE
+ARG ACTOR_RUNTIME=sayo-actor-runtime:latest
+FROM ${ACTOR_RUNTIME} AS actor_runtime
+
+FROM ${MODEL_IMAGE}
+
+ARG MODEL_NAME
+ENV MODEL_NAME=${MODEL_NAME}
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY --from=actor_runtime /export/wheels /tmp/actor-wheels
+# No BuildKit --mount here: registry builds via Docker API often use the legacy builder.
+RUN python -m pip install --no-index --find-links=/tmp/actor-wheels \
+        "grpcio-tools==1.80.0" \
+        "ray[default]==2.39.0" \
+        "onnxruntime>=1.17" \
+        "structlog>=24.1.0" \
+    && rm -rf /tmp/actor-wheels
+
+COPY --from=actor_runtime /export/stubs/proto /app/proto
+
+COPY sayo_image /app/sayo_image
+
+COPY vad-weights/silero_vad.onnx /opt/silero/silero_vad.onnx
+
+ENTRYPOINT ["python", "-m", "sayo_image.transcript_actor.bootstrap"]

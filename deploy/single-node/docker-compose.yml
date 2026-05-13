@@ -1,0 +1,135 @@
+name: sayo
+
+x-host-build: &host-build
+  context: ../../
+  args:
+    HOST_BASE: sayo-host-base:latest
+
+services:
+  host-base:
+    image: sayo-host-base:latest
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.host-base
+    command: ["true"]
+    profiles: ["build-only"]
+
+  # Wheelhouse + protoc stubs for Dockerfile.actor (multistage FROM). Build before
+  # register-model when deps change: docker compose --profile build-only build actor-runtime
+  actor-runtime:
+    image: sayo-actor-runtime:latest
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.actor-runtime
+    command: ["true"]
+    profiles: ["build-only"]
+
+  ray-head:
+    image: sayo-ray-head:latest
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.ray-head
+    container_name: sayo-ray-head
+    user: "0:0"
+    command: >
+      bash -c "ray start --head --port=6379 --dashboard-host=0.0.0.0
+      --num-cpus=4 --num-gpus=${SAYO_NUM_GPUS:-0} --block"
+    networks: [sayo_net]
+    ports:
+      - "6379:6379"
+      - "10001:10001"
+      - "8265:8265"
+    shm_size: "2g"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  model-registry:
+    image: sayo-registry:latest
+    build:
+      <<: *host-build
+      dockerfile: docker/Dockerfile.registry
+    container_name: sayo-model-registry
+    networks: [sayo_net]
+    ports:
+      - "8000:8000"
+    environment:
+      LOG_LEVEL: INFO
+      REGISTRY_ROOT: /manifests
+      SAYO_REPO_ROOT: /app
+      INTERNAL_DOCKER_REGISTRY: ${INTERNAL_DOCKER_REGISTRY:-}
+    volumes:
+      - manifests-volume:/manifests
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  router:
+    image: sayo-router:latest
+    build:
+      <<: *host-build
+      dockerfile: docker/Dockerfile.router
+    container_name: sayo-router
+    depends_on: [ray-head, model-registry]
+    networks: [sayo_net]
+    ports:
+      - "8081:8081"
+    environment:
+      LOG_LEVEL: INFO
+      RAY_ADDRESS: ray://ray-head:10001
+      RAY_NAMESPACE: sayo
+      REGISTRY_URL: http://model-registry:8000
+      ADMIN_PORT: "8081"
+
+  worker-manager:
+    image: sayo-worker-manager:latest
+    build:
+      <<: *host-build
+      dockerfile: docker/Dockerfile.worker_manager
+    container_name: sayo-worker-manager
+    depends_on: [ray-head, router]
+    networks: [sayo_net]
+    ports:
+      - "8082:8082"
+    environment:
+      LOG_LEVEL: INFO
+      NODE_ID: node-local
+      RAY_ADDRESS: ray://ray-head:10001
+      RAY_NAMESPACE: sayo
+      RAY_HEAD_HOST: ray-head:6379
+      REGISTRY_URL: http://model-registry:8000
+      SAYO_NETWORK: sayo_sayo_net
+      SAYO_DISTRIBUTED: "0"
+      ADMIN_PORT: "8082"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  gateway:
+    image: sayo-gateway:latest
+    build:
+      <<: *host-build
+      dockerfile: docker/Dockerfile.gateway
+    container_name: sayo-gateway
+    depends_on: [ray-head, router, model-registry]
+    networks: [sayo_net]
+    ports:
+      - "50051:50051"
+    environment:
+      LOG_LEVEL: INFO
+      GATEWAY_PORT: "50051"
+      RAY_ADDRESS: ray://ray-head:10001
+      RAY_NAMESPACE: sayo
+      REGISTRY_URL: http://model-registry:8000
+      # Debug: force VAD off regardless of client StreamingConfig (unset or "0" to use client VAD).
+      SAYO_DISABLE_VAD: "${SAYO_DISABLE_VAD:-1}"
+
+networks:
+  sayo_net:
+    driver: bridge
+
+volumes:
+  manifests-volume:

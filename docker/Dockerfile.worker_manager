@@ -1,0 +1,11 @@
+ARG HOST_BASE=sayo-host-base:latest
+FROM ${HOST_BASE}
+
+COPY sayo_host /app/sayo_host
+
+# Docker SDK + GPU stats library
+RUN python -m pip install --no-cache-dir \
+        "docker>=7.0.0" \
+        "pynvml>=11.5.0"
+
+ENTRYPOINT ["python", "-m", "sayo_host.worker_manager.manager"]

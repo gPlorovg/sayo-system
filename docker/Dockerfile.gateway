@@ -1,0 +1,9 @@
+ARG HOST_BASE=sayo-host-base:latest
+FROM ${HOST_BASE}
+
+# Overlay sayo_host so `docker compose build gateway` picks up Python changes
+# without rebuilding the whole sayo-host-base image (deps + protoc layer).
+COPY sayo_host /app/sayo_host
+
+EXPOSE 50051
+ENTRYPOINT ["python", "-m", "sayo_host.gateway.server"]

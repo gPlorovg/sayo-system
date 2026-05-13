@@ -1,0 +1,2 @@
+Placeholder. Run the curl command from README.md to download silero_vad.onnx
+into this directory before the Model Registry builds any actor_image.
