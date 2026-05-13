@@ -19,13 +19,11 @@ spawn an actor container, and final transcripts come back.
    ./sayoctl list   # confirm the manifest is there
    ```
 
-3. Repo `guidline/` is on the PYTHONPATH (it ships the reference client).
-
 ## Run
 
 ```bash
-# headless 5s mic capture against the live gateway
-python guidline/stand/client.py --host localhost --port 50051 --mic
+# from sayo-backend-system
+python tests/smoke/run.py --host localhost --port 50051 --duration 4
 ```
 
 You should see at least one `is_final=True` line and a non-empty
