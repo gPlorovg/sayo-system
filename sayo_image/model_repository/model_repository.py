@@ -193,11 +193,30 @@ class ModelRepository:
                 f"Cannot import adapter module '{module_name}': {exc}"
             ) from exc
 
+        adapter_bases: list[type] = [BaseSTTModel]
+        root_pkg = module_name.split(".", 1)[0] if module_name else ""
+        if root_pkg:
+            try:
+                ext_base_mod = importlib.import_module(f"{root_pkg}.base")
+                ext_base = getattr(ext_base_mod, "BaseSTTModel", None)
+                if (
+                    isinstance(ext_base, type)
+                    and ext_base is not BaseSTTModel
+                    and ext_base not in adapter_bases
+                ):
+                    adapter_bases.append(ext_base)
+            except ImportError:
+                pass
+
         for _, cls in inspect.getmembers(module, inspect.isclass):
-            if cls is BaseSTTModel:
+            if cls in adapter_bases:
                 continue
-            if issubclass(cls, BaseSTTModel):
-                return cls()
+            for candidate in adapter_bases:
+                try:
+                    if issubclass(cls, candidate):
+                        return cls()
+                except TypeError:
+                    continue
 
         raise ValueError(
             f"No BaseSTTModel subclass found in adapter module '{module_name}'."

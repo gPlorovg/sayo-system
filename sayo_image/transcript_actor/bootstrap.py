@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import signal
 import subprocess
 import sys
@@ -22,14 +21,9 @@ import time
 import ray
 import structlog
 
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-)
+from sayo_image.transcript_actor.log_config import configure_actor_process_logging
+
+configure_actor_process_logging()
 logger = structlog.get_logger("transcript_actor.bootstrap")
 
 
@@ -50,9 +44,13 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _start_ray_worker(ray_address: str, slot_resource: str) -> None:
+def _start_ray_worker(ray_address: str, slot_resource: str, device: str) -> None:
     resources = json.dumps({slot_resource: 1})
     cmd = ["ray", "start", "--address", ray_address, "--resources", resources]
+    # TranscriptActor requests num_gpus=1 on CUDA; the worker must advertise a GPU
+    # or Ray will never schedule the actor on this node.
+    if device.startswith("cuda"):
+        cmd.extend(["--num-gpus", "1"])
     logger.info("starting ray worker", cmd=" ".join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -68,8 +66,10 @@ def main() -> None:
     args = _parse_args()
     model_dir = args.model_dir or f"/app/models/{args.model_name}"
 
-    _start_ray_worker(args.ray_address, args.slot_resource)
-    ray.init(address="auto", namespace=args.namespace, log_to_driver=False)
+    _start_ray_worker(args.ray_address, args.slot_resource, args.device)
+    # Show worker/actor logs in container stdout to make debugging model init easier.
+    # (Ray Client streaming isn't used here; this is inside the actor container.)
+    ray.init(address="auto", namespace=args.namespace, log_to_driver=True)
 
     from sayo_image.transcript_actor.actor import TranscriptActor
 
