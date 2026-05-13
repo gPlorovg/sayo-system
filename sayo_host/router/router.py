@@ -73,6 +73,31 @@ class MasterRouter:
             node.last_heartbeat = time.time()
             node.vram_total_gb = float(payload.get("vram_total_gb", 0.0))
             node.vram_used_gb = float(payload.get("vram_used_gb", 0.0))
+            # Worker Manager is source of truth for running docker-backed actors.
+            alive = set(payload.get("actors") or [])
+            for name in list(node.actors.keys()):
+                if name not in alive:
+                    record = node.actors.get(name)
+                    if record is not None and (
+                        record.active_sessions > 0
+                        or (time.time() - record.last_used) < 30.0
+                    ):
+                        logger.info(
+                            "keeping actor record",
+                            node_id=node_id,
+                            actor_name=name,
+                            active_sessions=record.active_sessions,
+                            last_used=record.last_used,
+                            alive=sorted(alive),
+                        )
+                        continue
+                    logger.warning(
+                        "dropping router actor record (not in WM heartbeat)",
+                        node_id=node_id,
+                        actor_name=name,
+                        alive=sorted(alive),
+                    )
+                    node.actors.pop(name, None)
 
     async def acquire_session(
         self, session_id: str, model_id: str, vad_cfg: dict | None = None
@@ -83,6 +108,20 @@ class MasterRouter:
             actor = self._find_reusable_actor(model_id, manifest)
             if actor is None:
                 actor = await self._spawn_actor(manifest)
+                logger.info(
+                    "spawned new actor (no reusable slot)",
+                    model_id=model_id,
+                    actor_name=actor.actor_name,
+                    max_sessions=int(manifest.get("max_concurrent_sessions", 1)),
+                )
+            else:
+                logger.info(
+                    "reusing actor",
+                    model_id=model_id,
+                    actor_name=actor.actor_name,
+                    active_sessions=actor.active_sessions,
+                    max_sessions=int(manifest.get("max_concurrent_sessions", 1)),
+                )
             actor.active_sessions += 1
             actor.last_used = time.time()
             self._placements[session_id] = Placement(
@@ -104,6 +143,10 @@ class MasterRouter:
         async with self._lock:
             placement = self._placements.pop(session_id, None)
             if placement is None:
+                logger.warning(
+                    "release_session: unknown session_id (duplicate release?)",
+                    session_id=session_id,
+                )
                 return
             node = self._nodes.get(placement.node_id)
             if node is None:
@@ -236,7 +279,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sayo Master Router bootstrap")
     parser.add_argument(
         "--ray-address",
-        default=os.environ.get("RAY_ADDRESS", "ray-head:10001"),
+        default=os.environ.get("RAY_ADDRESS", "ray://ray-head:10001"),
     )
     parser.add_argument(
         "--namespace",
@@ -250,12 +293,51 @@ def main() -> None:
 
     configure_logging("router-bootstrap")
     ray.init(address=args.ray_address, namespace=args.namespace)
-    handle = MasterRouter.options(
-        name="MasterRouter",
-        namespace=args.namespace,
-        lifetime="detached",
-    ).remote(args.registry_url)
-    logger.info("MasterRouter registered", actor=handle, namespace=args.namespace)
+    actor_name = "MasterRouter"
+    replace = os.environ.get("SAYO_REPLACE_MASTER_ROUTER", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if replace:
+        try:
+            old = ray.get_actor(actor_name, namespace=args.namespace)
+            ray.kill(old, no_restart=True)
+            logger.info(
+                "MasterRouter killed before recreate (SAYO_REPLACE_MASTER_ROUTER)",
+                actor_name=actor_name,
+            )
+        except ValueError:
+            logger.info("no existing MasterRouter to replace", actor_name=actor_name)
+        handle = MasterRouter.options(
+            name=actor_name,
+            namespace=args.namespace,
+            lifetime="detached",
+        ).remote(args.registry_url)
+        logger.info(
+            "MasterRouter created (replace)",
+            actor_name=actor_name,
+            namespace=args.namespace,
+        )
+    else:
+        try:
+            handle = ray.get_actor(actor_name, namespace=args.namespace)
+            logger.info(
+                "MasterRouter already in Ray cluster (container re-attach)",
+                actor_name=actor_name,
+                namespace=args.namespace,
+            )
+        except ValueError:
+            handle = MasterRouter.options(
+                name=actor_name,
+                namespace=args.namespace,
+                lifetime="detached",
+            ).remote(args.registry_url)
+            logger.info(
+                "MasterRouter created",
+                actor_name=actor_name,
+                namespace=args.namespace,
+            )
 
     from sayo_host.common.admin_http import serve_admin_state
 

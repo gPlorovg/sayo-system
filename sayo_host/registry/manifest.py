@@ -20,22 +20,10 @@ def _audio_quant_to_proto(value: str) -> str:
 
 
 @dataclass(slots=True)
-class WeightArtifactInfo:
-    relpath: str
-    sha256: str | None = None
-
-
-@dataclass(slots=True)
 class VADInfo:
     supported: bool = False
     default_threshold: float = 0.5
     default_min_silence_ms: int = 500
-
-
-@dataclass(slots=True)
-class WeightsInfo:
-    baked: bool = True
-    artifacts: list[WeightArtifactInfo] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -56,7 +44,6 @@ class ModelManifest:
     min_vram_gb: float
     max_concurrent_sessions: int
     vad: VADInfo = field(default_factory=VADInfo)
-    weights: WeightsInfo = field(default_factory=WeightsInfo)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -69,14 +56,8 @@ class ModelManifest:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelManifest":
-        weights_raw = raw.get("weights") or {}
-        artifacts = [
-            WeightArtifactInfo(**a) for a in (weights_raw.get("artifacts") or [])
-        ]
-        weights = WeightsInfo(
-            baked=bool(weights_raw.get("baked", True)),
-            artifacts=artifacts,
-        )
+        raw = dict(raw)
+        raw.pop("weights", None)  # legacy catalog entries
         vad_raw = raw.get("vad") or {}
         vad = VADInfo(
             supported=bool(vad_raw.get("supported", False)),
@@ -98,7 +79,6 @@ class ModelManifest:
             min_vram_gb=float(raw.get("min_vram_gb", 0.0)),
             max_concurrent_sessions=int(raw.get("max_concurrent_sessions", 1)),
             vad=vad,
-            weights=weights,
         )
 
     @classmethod

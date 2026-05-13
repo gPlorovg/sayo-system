@@ -27,7 +27,7 @@ class HostSettings:
     @classmethod
     def from_env(cls) -> "HostSettings":
         return cls(
-            ray_address=_env("RAY_ADDRESS", "ray-head:10001"),
+            ray_address=_env("RAY_ADDRESS", "ray-head:6379"),
             ray_namespace=_env("RAY_NAMESPACE", "sayo"),
             registry_url=_env("REGISTRY_URL", "http://model-registry:8000"),
             node_id=_env("NODE_ID", "node-local"),

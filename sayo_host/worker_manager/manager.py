@@ -45,6 +45,7 @@ class WorkerManager:
         self._registry_url = registry_url.rstrip("/")
         self._distributed = distributed
         self._docker = docker.from_env()
+        self._namespace = os.environ.get("RAY_NAMESPACE", "sayo")
         self._actors: dict[str, dict] = {}
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info(
@@ -69,8 +70,11 @@ class WorkerManager:
                 logger.info("docker pull actor", image=actor_image_tag)
                 self._docker.images.pull(actor_image_tag)
 
-        slot_resource = f"slot_{uuid.uuid4().hex}"
-        actor_name = f"actor_{uuid.uuid4().hex}"
+        # One id for both names so router's slot_resource matches the worker's
+        # custom resource (see MasterRouter._spawn_actor).
+        actor_uid = uuid.uuid4().hex
+        actor_name = f"actor_{actor_uid}"
+        slot_resource = f"slot_{actor_uid}"
         device = "cuda:0" if vram_gb > 0 else "cpu"
         model_name = model_dir.rsplit("/", 1)[-1]
 
@@ -89,12 +93,17 @@ class WorkerManager:
             "network": self._network,
             "detach": True,
             "command": cmd,
+            # Ray uses /dev/shm heavily; Docker defaults (64MB) cause severe slowdown.
+            "shm_size": os.environ.get("SAYO_ACTOR_SHM_SIZE", "2g"),
             "labels": {
                 "org.sayo.actor.name": actor_name,
                 "org.sayo.actor.model_id": model_id,
                 "org.sayo.actor.node_id": self._node_id,
             },
         }
+        log_level = os.environ.get("LOG_LEVEL")
+        if log_level:
+            run_kwargs["environment"] = {"LOG_LEVEL": log_level}
         if vram_gb > 0:
             run_kwargs["device_requests"] = [
                 docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
@@ -106,7 +115,23 @@ class WorkerManager:
             slot_resource=slot_resource,
         )
         container = self._docker.containers.run(actor_image_tag, **run_kwargs)
-        await self._wait_for_actor(actor_name, timeout=60.0)
+        register_timeout = float(os.environ.get("SAYO_ACTOR_REGISTER_TIMEOUT", "300"))
+        try:
+            await self._wait_for_actor(actor_name, timeout=register_timeout)
+        except BaseException:
+            try:
+                container.stop(timeout=15)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                container.remove(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._docker.containers.get(container.id).remove(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
         self._actors[actor_name] = {
             "container_id": container.id,
@@ -122,7 +147,7 @@ class WorkerManager:
             logger.warning("evict: unknown actor", actor_name=actor_name)
             return
         try:
-            handle = ray.get_actor(actor_name, namespace="sayo")
+            handle = ray.get_actor(actor_name, namespace=self._namespace)
             try:
                 await handle.unload.remote()
             except Exception as exc:  # noqa: BLE001
@@ -176,17 +201,16 @@ class WorkerManager:
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                ray.get_actor(actor_name, namespace="sayo")
+                ray.get_actor(actor_name, namespace=self._namespace)
                 return
             except ValueError:
                 await asyncio.sleep(0.5)
         raise TimeoutError(f"actor {actor_name} did not register in {timeout:.0f}s")
 
     async def _heartbeat_loop(self) -> None:
-        namespace = os.environ.get("RAY_NAMESPACE", "sayo")
         while True:
             try:
-                router = ray.get_actor("MasterRouter", namespace=namespace)
+                router = ray.get_actor("MasterRouter", namespace=self._namespace)
                 payload = await self.heartbeat_payload()
                 await router.heartbeat.remote(self._node_id, payload)
             except ValueError:
@@ -201,7 +225,7 @@ def main() -> None:
     parser.add_argument("--node-id", default=os.environ.get("NODE_ID", "node-local"))
     parser.add_argument(
         "--ray-address",
-        default=os.environ.get("RAY_ADDRESS", "ray-head:10001"),
+        default=os.environ.get("RAY_ADDRESS", "ray://ray-head:10001"),
     )
     parser.add_argument(
         "--namespace",
@@ -228,23 +252,33 @@ def main() -> None:
 
     configure_logging("worker-manager-bootstrap")
     ray.init(address=args.ray_address, namespace=args.namespace)
-    handle = WorkerManager.options(
-        name=f"WorkerManager:{args.node_id}",
-        namespace=args.namespace,
-        lifetime="detached",
-    ).remote(
-        node_id=args.node_id,
-        ray_head_address=args.ray_head,
-        sayo_network=args.network,
-        registry_url=args.registry_url,
-        distributed=args.distributed,
-    )
-    logger.info(
-        "WorkerManager registered",
-        actor=handle,
-        node_id=args.node_id,
-        namespace=args.namespace,
-    )
+    wm_name = f"WorkerManager:{args.node_id}"
+    try:
+        handle = ray.get_actor(wm_name, namespace=args.namespace)
+        logger.info(
+            "WorkerManager already in Ray cluster (container re-attach)",
+            actor_name=wm_name,
+            node_id=args.node_id,
+            namespace=args.namespace,
+        )
+    except ValueError:
+        handle = WorkerManager.options(
+            name=wm_name,
+            namespace=args.namespace,
+            lifetime="detached",
+        ).remote(
+            node_id=args.node_id,
+            ray_head_address=args.ray_head,
+            sayo_network=args.network,
+            registry_url=args.registry_url,
+            distributed=args.distributed,
+        )
+        logger.info(
+            "WorkerManager created",
+            actor_name=wm_name,
+            node_id=args.node_id,
+            namespace=args.namespace,
+        )
 
     from sayo_host.common.admin_http import serve_admin_state
 
