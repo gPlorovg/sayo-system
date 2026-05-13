@@ -1,5 +1,7 @@
 # Common base for all four host services.
-FROM python:3.12-slim
+# Keep Python patch version aligned with rayproject/ray:2.39.0-py312-gpu (3.12.7)
+# to avoid Ray runtime version mismatch when starting ray workers in containers.
+FROM python:3.12.7-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -26,7 +28,8 @@ RUN python -m pip install --upgrade pip && \
         "fastapi>=0.115.0" \
         "uvicorn[standard]>=0.30.0" \
         "pydantic>=2.7.0" \
-        "ray[default]>=2.30.0"
+        "ray[default]==2.39.0" \
+        "ray[client]==2.39.0"
 
 # Common host-side code + freshly generated proto stubs.
 COPY proto /app/proto

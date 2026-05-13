@@ -1,6 +1,8 @@
 ARG HOST_BASE=sayo-host-base:latest
 FROM ${HOST_BASE}
 
+COPY sayo_host /app/sayo_host
+
 # Docker SDK + GPU stats library
 RUN python -m pip install --no-cache-dir \
         "docker>=7.0.0" \

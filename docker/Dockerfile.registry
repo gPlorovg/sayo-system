@@ -4,12 +4,16 @@ FROM ${HOST_BASE}
 # Docker SDK so the registry can pull/inspect/build/push.
 RUN python -m pip install --no-cache-dir "docker>=7.0.0"
 
+# Overlay Python + admin static from context (avoids rebuilding sayo-host-base only for registry).
+COPY sayo_host /app/sayo_host
+
 # Image-side python tree + Dockerfile.actor + vad-weights + proto are
 # bundled INSIDE the registry image so the wrapping pipeline can build
 # actor_image without bind-mounting source files.
 COPY sayo_image /app/sayo_image
 COPY vad-weights /app/vad-weights
 COPY docker/Dockerfile.actor /app/docker/Dockerfile.actor
+COPY docker/Dockerfile.actor-runtime /app/docker/Dockerfile.actor-runtime
 
 EXPOSE 8000
 ENTRYPOINT ["python", "-m", "sayo_host.registry.service"]
