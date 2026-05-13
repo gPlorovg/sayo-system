@@ -63,6 +63,13 @@ message StreamingRecognizeResponse {
   float confidence = 3;
 
   // Optional metadata (latency, model_id, timings, etc.)
+  //
+  // Gateway emits connection lifecycle on early responses (empty transcript,
+  // is_final=false) using metadata["connection_status"]:
+  //   config_accepted, allocating_session, actor_reserved, session_opening,
+  //   connected — then streaming transcript payloads from the actor.
+  // On fatal setup errors after streaming started, is_final=true and
+  // connection_status=error with metadata["detail"].
   map<string, string> metadata = 4;
 }
 
